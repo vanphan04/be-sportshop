@@ -505,28 +505,34 @@ app.get("/api/danhmuc", async (req, res) => {
 });
 
 // Thêm danh mục
-app.post("/api/danhmuc", (req, res) => {
+app.post("/api/danhmuc", async (req, res) => {
   const { tendm } = req.body;
   if (!tendm)
     return res.status(400).json({ error: "Tên danh mục không được để trống" });
 
-  // Kiểm tra tên đã tồn tại
-  db.query("SELECT * FROM danhmuc WHERE tendm = ?", [tendm], (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (results.length > 0) {
+  try {
+    // Kiểm tra tên đã tồn tại
+    const check = await db.query(
+      "SELECT * FROM danhmuc WHERE tendm = $1",
+      [tendm]
+    );
+
+    if (check.rows.length > 0) {
       return res.status(409).json({ error: "Tên danh mục đã tồn tại" });
     }
 
     // Nếu không trùng thì thêm mới
-    db.query(
+    await db.query(
       "INSERT INTO danhmuc (tendm) VALUES ($1)",
-      [tendm],
-      (err, result) => {
-        if (err) return res.status(500).json({ error: "Lỗi thêm danh mục" });
-        res.json({ message: "Thêm danh mục thành công" });
-      },
+      [tendm]
     );
-  });
+
+    res.json({ message: "Thêm danh mục thành công" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Lỗi server" });
+  }
 });
 
 // Sửa danh mục
@@ -561,34 +567,40 @@ app.put("/api/danhmuc/:madm", async (req, res) => {
 });
 
 // Xóa danh mục nếu không còn sản phẩm liên kết
-app.delete("/api/danhmuc/:madm", (req, res) => {
+app.delete("/api/danhmuc/:madm", async (req, res) => {
   const { madm } = req.params;
 
-  db.query(
-    "SELECT COUNT(*) AS total FROM sanpham WHERE madm = ?",
-    [madm],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
+  try {
+    const check = await db.query(
+      "SELECT COUNT(*) FROM sanpham WHERE madm = $1",
+      [madm]
+    );
 
-      if (result[0].total > 0) {
-        return res.status(400).json({
-          error: "Không thể xóa danh mục vì vẫn còn sản phẩm liên quan",
-        });
-      }
+    const total = parseInt(check.rows[0].count);
 
-      db.query("DELETE FROM danhmuc WHERE madm = ?", [madm], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        if (result.affectedRows === 0) {
-          return res
-            .status(404)
-            .json({ error: "Không tìm thấy danh mục để xóa" });
-        }
-
-        res.json({ message: "Xóa danh mục thành công" });
+    if (total > 0) {
+      return res.status(400).json({
+        error: "Không thể xóa danh mục vì vẫn còn sản phẩm liên quan",
       });
-    },
-  );
+    }
+
+    const result = await db.query(
+      "DELETE FROM danhmuc WHERE madm = $1 RETURNING *",
+      [madm]
+    );
+
+    if (result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Không tìm thấy danh mục để xóa" });
+    }
+
+    res.json({ message: "Xóa danh mục thành công" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Lỗi server" });
+  }
 });
 
 //Lấy sản phẩm theo mã loại
@@ -1308,7 +1320,7 @@ app.post("/api/momo/checkout", async (req, res) => {
     items,
     pttt,
     tongtien,
-    makh: makhFromFE, // 👈 lấy từ FE
+    makh: makhFromFE,
   } = req.body;
 
   if (
@@ -1324,34 +1336,35 @@ app.post("/api/momo/checkout", async (req, res) => {
     });
   }
 
-
+  const client = await db.connect();
 
   try {
     // ================= TRANSACTION =================
-    await connection.beginTransaction();
+    await client.query("BEGIN");
 
     // ================= CHECK STOCK =================
     for (const item of items) {
       const { variant_id, masp, mamau, quantity } = item;
 
-      let query =
-        "SELECT id, stock FROM sanpham_variant WHERE masp = ?";
+      let query = "SELECT id, stock FROM sanpham_variant WHERE masp = $1";
       const params = [masp];
+      let paramIndex = 2;
 
       if (variant_id) {
-        query += " AND id = ?";
+        query += ` AND id = $${paramIndex}`;
         params.push(variant_id);
+        paramIndex++;
       } else if (mamau) {
-        query += " AND mamau = ?";
+        query += ` AND mamau = $${paramIndex}`;
         params.push(mamau);
       }
 
-      const [rows] = await connection.query(query, params);
+      const result = await client.query(query, params);
 
-      if (!rows.length || rows[0].stock < quantity) {
+      if (!result.rows.length || result.rows[0].stock < quantity) {
         throw new Error(
           `Sản phẩm không đủ hàng. Còn lại: ${
-            rows.length ? rows[0].stock : 0
+            result.rows.length ? result.rows[0].stock : 0
           }`
         );
       }
@@ -1361,50 +1374,52 @@ app.post("/api/momo/checkout", async (req, res) => {
     let makh = makhFromFE;
 
     if (!makh) {
-      const [khResult] = await connection.query(
-        "INSERT INTO khachhang (tenkh, sdt, email, diachi) VALUES ($1, $2, $3, $4)",
+      const khResult = await client.query(
+        "INSERT INTO khachhang (tenkh, sdt, email, diachi) VALUES ($1, $2, $3, $4) RETURNING makh",
         [tenkh, sdt, email, diachi]
       );
-      makh = khResult.insertId;
+      makh = khResult.rows[0].makh;
     }
 
     // ================= HÓA ĐƠN =================
-    const [hdResult] = await connection.query(
+    const hdResult = await client.query(
       `INSERT INTO hoadon 
-      (ngayxuat, tongtien, trangthai, thanhtoan, makh, pttt, ghichu) 
-      VALUES (NOW(), $1, 'Đang chuẩn bị', 'Chờ thanh toán', $2, $3, $4)`,
-      [tongtien, makh, pttt || "MoMo", ghichu || ""]
+      (tongtien, trangthai, thanhtoan, makh, pttt, ghichu) 
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING mahd`,
+      [tongtien, "Đang chuẩn bị", "Chờ thanh toán", makh, pttt || "MoMo", ghichu || ""]
     );
 
-    const mahd = hdResult.insertId;
+    const mahd = hdResult.rows[0].mahd;
 
     // ================= CHI TIẾT + TRỪ KHO =================
     for (const item of items) {
       const { masp, variant_id, mamau, size, quantity, gia } = item;
 
-      let query =
-        "SELECT id, stock, price, size, mamau FROM sanpham_variant WHERE masp = ?";
+      let query = "SELECT id, stock, price, size, mamau FROM sanpham_variant WHERE masp = $1";
       const params = [masp];
+      let paramIndex = 2;
 
       if (variant_id) {
-        query += " AND id = ?";
+        query += ` AND id = $${paramIndex}`;
         params.push(variant_id);
+        paramIndex++;
       } else if (mamau) {
-        query += " AND mamau = ?";
+        query += ` AND mamau = $${paramIndex}`;
         params.push(mamau);
       }
 
-      const [variantRows] = await connection.query(query, params);
+      const variantResult = await client.query(query, params);
 
-      if (!variantRows.length) {
+      if (!variantResult.rows.length) {
         throw new Error("Không tìm thấy biến thể sản phẩm");
       }
 
-      const variant = variantRows[0];
+      const variant = variantResult.rows[0];
       const priceToUse = gia || variant.price || 0;
 
       // Insert chi tiết hóa đơn
-      await connection.query(
+      await client.query(
         `INSERT INTO chitiethoadon
         (mahd, masp, variant_id, mamau, size, quantity, price)
         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1420,16 +1435,13 @@ app.post("/api/momo/checkout", async (req, res) => {
       );
 
       // Trừ kho
-      await connection.query(
-        "UPDATE sanpham_variant SET stock = stock - ? WHERE id = ?",
+      await client.query(
+        "UPDATE sanpham_variant SET stock = stock - $1 WHERE id = $2",
         [quantity, variant.id]
       );
     }
 
     // ================= MOMO =================
-    const crypto = require("crypto");
-    const axios = require("axios");
-
     const accessKey = "F8BBA842ECF85";
     const secretKey = "K951B6PE1waDMi640xX08PD3vg6EkVlz";
     const partnerCode = "MOMO";
@@ -1480,7 +1492,7 @@ app.post("/api/momo/checkout", async (req, res) => {
     );
 
     // ================= COMMIT =================
-    await connection.commit();
+    await client.query("COMMIT");
 
     return res.json({
       message: "Tạo đơn hàng thành công",
@@ -1490,80 +1502,82 @@ app.post("/api/momo/checkout", async (req, res) => {
   } catch (error) {
     console.error("🔥 MOMO CHECKOUT ERROR:", error);
 
-    await connection.rollback();
+    await client.query("ROLLBACK");
 
     return res.status(500).json({
       message: error.message || "Lỗi server",
     });
+  } finally {
+    client.release();
   }
 });
 app.post("/api/momo/ipn", async (req, res) => {
-  const conn = await db.promise().getConnection();
+  const client = await db.connect();
 
   try {
     const { orderId, resultCode } = req.body;
 
     const mahd = orderId.split("_")[1];
 
-    await conn.beginTransaction();
+    await client.query("BEGIN");
 
     if (resultCode === 0) {
       // ✅ thanh toán thành công
 
-      const [items] = await conn.query(
+      const itemsResult = await client.query(
         `SELECT variant_id, quantity 
-         FROM chitiethoadon WHERE mahd = ?`,
+         FROM chitiethoadon WHERE mahd = $1`,
         [mahd]
       );
 
-      for (const item of items) {
+      for (const item of itemsResult.rows) {
         // 🔥 LOCK + trừ kho
-        const [stockRow] = await conn.query(
+        const stockResult = await client.query(
           `SELECT stock FROM sanpham_variant 
-           WHERE id = ? FOR UPDATE`,
+           WHERE id = $1 FOR UPDATE`,
           [item.variant_id]
         );
 
-        if (stockRow[0].stock < item.quantity) {
+        if (stockResult.rows[0].stock < item.quantity) {
           throw new Error("Hết hàng khi thanh toán");
         }
 
-        await conn.query(
+        await client.query(
           `UPDATE sanpham_variant
-           SET stock = stock - ?
-           WHERE id = ?`,
+           SET stock = stock - $1
+           WHERE id = $2`,
           [item.quantity, item.variant_id]
         );
       }
 
       // update trạng thái
-      await conn.query(
+      await client.query(
         `UPDATE hoadon 
          SET trangthai = 'CONFIRMED', thanhtoan = 'PAID'
-         WHERE mahd = ?`,
+         WHERE mahd = $1`,
         [mahd]
       );
 
     } else {
       // ❌ thanh toán fail
-      await conn.query(
+      await client.query(
         `UPDATE hoadon 
          SET trangthai = 'CANCELLED', thanhtoan = 'FAILED'
-         WHERE mahd = ?`,
+         WHERE mahd = $1`,
         [mahd]
       );
     }
 
-    await conn.commit();
+    await client.query("COMMIT");
 
     res.json({ message: "OK" });
 
   } catch (err) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     console.error("IPN ERROR:", err);
     res.status(500).json({ error: "IPN lỗi" });
   } finally {
-    conn.release();
+    client.release();
   }
 });
 //thêm sản phẩm
