@@ -519,7 +519,7 @@ app.post("/api/danhmuc", (req, res) => {
 
     // Nếu không trùng thì thêm mới
     db.query(
-      "INSERT INTO danhmuc (tendm) VALUES (?)",
+      "INSERT INTO danhmuc (tendm) VALUES ($1)",
       [tendm],
       (err, result) => {
         if (err) return res.status(500).json({ error: "Lỗi thêm danh mục" });
@@ -1324,7 +1324,7 @@ app.post("/api/momo/checkout", async (req, res) => {
     });
   }
 
-  const connection = db.promise();
+
 
   try {
     // ================= TRANSACTION =================
@@ -1362,7 +1362,7 @@ app.post("/api/momo/checkout", async (req, res) => {
 
     if (!makh) {
       const [khResult] = await connection.query(
-        "INSERT INTO khachhang (tenkh, sdt, email, diachi) VALUES (?, ?, ?, ?)",
+        "INSERT INTO khachhang (tenkh, sdt, email, diachi) VALUES ($1, $2, $3, $4)",
         [tenkh, sdt, email, diachi]
       );
       makh = khResult.insertId;
@@ -1372,7 +1372,7 @@ app.post("/api/momo/checkout", async (req, res) => {
     const [hdResult] = await connection.query(
       `INSERT INTO hoadon 
       (ngayxuat, tongtien, trangthai, thanhtoan, makh, pttt, ghichu) 
-      VALUES (NOW(), ?, 'Đang chuẩn bị', 'Chờ thanh toán', ?, ?, ?)`,
+      VALUES (NOW(), $1, 'Đang chuẩn bị', 'Chờ thanh toán', $2, $3, $4)`,
       [tongtien, makh, pttt || "MoMo", ghichu || ""]
     );
 
@@ -1407,7 +1407,7 @@ app.post("/api/momo/checkout", async (req, res) => {
       await connection.query(
         `INSERT INTO chitiethoadon
         (mahd, masp, variant_id, mamau, size, quantity, price)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           mahd,
           masp,
